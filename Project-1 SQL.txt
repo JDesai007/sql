@@ -1,19 +1,122 @@
+-- ===================================================================
+-- DROP ALL OBJECTS (safe blocks: ignore "object not found" errors)
+-- ===================================================================
+BEGIN
+    EXECUTE IMMEDIATE 'DROP PACKAGE emp_mgmt_pkg';
+EXCEPTION WHEN OTHERS THEN
+    IF SQLCODE != -4043 THEN NULL; END IF;
+END;
+/
 
---- Cluster for Employee and Department table-------- 
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TRIGGER trg_check_doj';
+EXCEPTION WHEN OTHERS THEN NULL;
+END;
+/
 
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TRIGGER trg_auto_att_date';
+EXCEPTION WHEN OTHERS THEN NULL;
+END;
+/
+
+BEGIN
+    EXECUTE IMMEDIATE 'DROP VIEW vw_emp_basic';
+EXCEPTION WHEN OTHERS THEN NULL;
+END;
+/
+
+BEGIN
+    EXECUTE IMMEDIATE 'DROP VIEW vw_attendance_today';
+EXCEPTION WHEN OTHERS THEN NULL;
+END;
+/
+
+BEGIN
+    EXECUTE IMMEDIATE 'DROP INDEX idx_emp_name';
+EXCEPTION WHEN OTHERS THEN NULL;
+END;
+/
+
+BEGIN
+    EXECUTE IMMEDIATE 'DROP INDEX idx_att_date';
+EXCEPTION WHEN OTHERS THEN NULL;
+END;
+/
+
+BEGIN
+    EXECUTE IMMEDIATE 'DROP INDEX emp_dept_cluster_idx';
+EXCEPTION WHEN OTHERS THEN NULL;
+END;
+/
+
+BEGIN
+    EXECUTE IMMEDIATE 'DROP SEQUENCE seq_emp';
+EXCEPTION WHEN OTHERS THEN NULL;
+END;
+/
+
+BEGIN
+    EXECUTE IMMEDIATE 'DROP SEQUENCE seq_att';
+EXCEPTION WHEN OTHERS THEN NULL;
+END;
+/
+
+BEGIN
+    EXECUTE IMMEDIATE 'DROP SEQUENCE seq_leave';
+EXCEPTION WHEN OTHERS THEN NULL;
+END;
+/
+
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE LeaveRequest';
+EXCEPTION WHEN OTHERS THEN NULL;
+END;
+/
+
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE Attendance';
+EXCEPTION WHEN OTHERS THEN NULL;
+END;
+/
+
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE Employee';
+EXCEPTION WHEN OTHERS THEN NULL;
+END;
+/
+
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE Department';
+EXCEPTION WHEN OTHERS THEN NULL;
+END;
+/
+
+BEGIN
+    EXECUTE IMMEDIATE 'DROP CLUSTER emp_dept_cluster';
+EXCEPTION WHEN OTHERS THEN NULL;
+END;
+/
+
+-- ===================================================================
+-- CREATE CLUSTER
+-- ===================================================================
+-- NOTE: Change STORAGE clauses or tablespaces as per your DB environment.
 CREATE CLUSTER emp_dept_cluster (dept_id NUMBER)
     STORAGE (INITIAL 1000 NEXT 500);
-
----- Department Table -------
-
+-- Create an index for the cluster
+CREATE INDEX emp_dept_cluster_idx ON CLUSTER emp_dept_cluster;
+-- ===================================================================
+-- CREATE TABLES
+-- ===================================================================
+-- Department table (clustered)
 CREATE TABLE Department (
     dept_id NUMBER PRIMARY KEY,
     dept_name VARCHAR2(30)
-) CLUSTER emp_dept_cluster (dept_id);
+) CLUSTER emp_dept_cluster (dept_id)
+STORAGE (INITIAL 1000 NEXT 500);
 
-
----- Employee Table -------
-
+-- Employee table (clustered)
 CREATE TABLE Employee (
     emp_id NUMBER PRIMARY KEY,
     emp_name VARCHAR2(30),
@@ -24,11 +127,11 @@ CREATE TABLE Employee (
     contact VARCHAR2(15),
     email VARCHAR2(30),
     CONSTRAINT fk_dept FOREIGN KEY (dept_id) REFERENCES Department(dept_id)
-   ) CLUSTER emp_dept_cluster (dept_id);
+) CLUSTER emp_dept_cluster (dept_id)
+STORAGE (INITIAL 1000 NEXT 500);
 
----- Attendance Table -------
-
-- Create partitioned table with tablespace mapping
+-- Attendance table with RANGE partitioning on attendance_date
+-- NOTE: Replace TABLESPACE STUD and STUDENT if those tablespaces do not exist.
 CREATE TABLE Attendance (
     attendance_id NUMBER PRIMARY KEY,
     emp_id NUMBER REFERENCES Employee(emp_id),
@@ -36,19 +139,13 @@ CREATE TABLE Attendance (
     attendance_date DATE DEFAULT SYSDATE
 )
 PARTITION BY RANGE (attendance_date) (
-    -- First 6 months go to STUD tablespace
     PARTITION att_jan_jun_2025 VALUES LESS THAN (DATE '2025-07-01') TABLESPACE STUD,
-    
-    -- Last 6 months go to STUDENT tablespace
     PARTITION att_jul_dec_2025 VALUES LESS THAN (DATE '2026-01-01') TABLESPACE STUDENT,
-    
-    -- Any data beyond 2025 will also go to STUD tablespace
     PARTITION att_future VALUES LESS THAN (MAXVALUE) TABLESPACE STUD
 )
 STORAGE (INITIAL 1000 NEXT 500);
 
----- LeaveRequest Table -------
-
+-- LeaveRequest table
 CREATE TABLE LeaveRequest (
     leave_id NUMBER PRIMARY KEY,
     emp_id NUMBER REFERENCES Employee(emp_id),
@@ -56,38 +153,26 @@ CREATE TABLE LeaveRequest (
     start_date DATE,
     end_date DATE,
     status VARCHAR2(20) CHECK (status IN ('Pending', 'Approved', 'Rejected'))
-)STORAGE (INITIAL 1000 NEXT 500);
+)
+STORAGE (INITIAL 1000 NEXT 500);
 
+-- ===================================================================
+-- SEQUENCES
+-- ===================================================================
+CREATE SEQUENCE seq_emp START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE;
+CREATE SEQUENCE seq_att START WITH 100 INCREMENT BY 1 NOCACHE NOCYCLE;
+CREATE SEQUENCE seq_leave START WITH 500 INCREMENT BY 1 NOCACHE NOCYCLE;
 
-
---- Sequences --------
-
-CREATE SEQUENCE seq_emp 
-	START WITH 1 
-	INCREMENT BY 1;
-
-CREATE SEQUENCE seq_att 
-	START WITH 100 
-	INCREMENT BY 1;
-
-CREATE SEQUENCE seq_leave 
-	START WITH 500
-	INCREMENT BY 1;
-
-
---- Indexes --------
-
+-- ===================================================================
+-- INDEXES
+-- ===================================================================
 CREATE INDEX idx_emp_name ON Employee(emp_name);
+CREATE INDEX idx_att_date ON Attendance(attendance_date);
+-- (emp_dept_cluster_idx created earlier)
 
-CREATE INDEX idx_att_date ON Attendance(10_date);
-CREATE INDEX emp_dept_cluster_idx ON CLUSTER emp_dept_cluster;
-
-
-
-
---- Views --------
-
-1) view employee data with department ID
+-- ===================================================================
+-- VIEWS
+-- ===================================================================
 CREATE OR REPLACE VIEW vw_emp_basic AS
 SELECT 
     e.emp_id, 
@@ -99,62 +184,69 @@ FROM
 JOIN 
     Department d ON e.dept_id = d.dept_id;
 
-2) Show to day attendance 
 CREATE OR REPLACE VIEW vw_attendance_today AS
 SELECT a.attendance_id, a.emp_id, e.emp_name, a.status, a.attendance_date
 FROM Attendance a
 JOIN Employee e ON a.emp_id = e.emp_id
 WHERE TRUNC(a.attendance_date) = TRUNC(SYSDATE);
 
---- Functions --------
-
-1)Get Age of employee
+-- ===================================================================
+-- STANDALONE FUNCTIONS
+-- ===================================================================
+-- Get Age of employee (years)
 CREATE OR REPLACE FUNCTION get_employee_age(eid NUMBER)
 RETURN NUMBER IS
-    dob DATE;
-    age NUMBER;
+    v_dob DATE;
+    v_age NUMBER;
 BEGIN
-    SELECT dob INTO dob FROM Employee WHERE emp_id = eid;
-    age := TRUNC(MONTHS_BETWEEN(SYSDATE, dob) / 12);
-    RETURN age;
+    SELECT dob INTO v_dob FROM Employee WHERE emp_id = eid;
+    v_age := TRUNC(MONTHS_BETWEEN(SYSDATE, v_dob) / 12);
+    RETURN v_age;
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        RETURN NULL;
 END;
 /
 
-2) show total leave by employee
+-- Get total leaves for an employee
 CREATE OR REPLACE FUNCTION get_total_leaves(eid NUMBER)
 RETURN NUMBER IS
-    total NUMBER;
+    v_total NUMBER;
 BEGIN
-    SELECT COUNT(*) INTO total FROM LeaveRequest WHERE emp_id = eid;
-    RETURN total;
+    SELECT COUNT(*) INTO v_total FROM LeaveRequest WHERE emp_id = eid;
+    RETURN v_total;
 END;
 /
 
-
---- Procedures --------
-
-1) Insert data into employee table
+-- ===================================================================
+-- STANDALONE PROCEDURES
+-- ===================================================================
+-- Insert Employee with DOJ >= DOB + 18 years validation
 CREATE OR REPLACE PROCEDURE proc_insert_employee (
-    p_name VARCHAR2, p_dob DATE, p_doj DATE, p_dept NUMBER,
- =    p_gender VARCHAR2, p_contact VARCHAR2, p_email VARCHAR2
+    p_name IN VARCHAR2,
+    p_dob IN DATE,
+    p_doj IN DATE,
+    p_dept IN NUMBER,
+    p_gender IN VARCHAR2,
+    p_contact IN VARCHAR2,
+    p_email IN VARCHAR2
 ) IS
 BEGIN
     IF MONTHS_BETWEEN(p_doj, p_dob) < 216 THEN
         RAISE_APPLICATION_ERROR(-20001, 'DOJ must be at least 18 years after DOB');
     END IF;
 
-    INSERT INTO Employee 
+    INSERT INTO Employee (emp_id, emp_name, dob, doj, dept_id, gender, contact, email)
     VALUES (seq_emp.NEXTVAL, p_name, p_dob, p_doj, p_dept, p_gender, p_contact, p_email);
 
     DBMS_OUTPUT.PUT_LINE('Employee "' || p_name || '" inserted successfully.');
 END;
 /
 
-
-
+-- Insert Department
 CREATE OR REPLACE PROCEDURE proc_insert_department (
-    p_dept_id NUMBER,
-    p_dept_name VARCHAR2
+    p_dept_id IN NUMBER,
+    p_dept_name IN VARCHAR2
 ) IS
 BEGIN
     INSERT INTO Department (dept_id, dept_name)
@@ -164,51 +256,49 @@ BEGIN
 END;
 /
 
+-- Insert Attendance (uses seq_att; attendance_date defaults to SYSDATE)
 CREATE OR REPLACE PROCEDURE proc_insert_attendance (
-    p_emp_id NUMBER,
-    p_status VARCHAR2
+    p_emp_id IN NUMBER,
+    p_status IN VARCHAR2
 ) IS
 BEGIN
-    INSERT INTO Attendance
+    INSERT INTO Attendance (attendance_id, emp_id, status, attendance_date)
     VALUES (seq_att.NEXTVAL, p_emp_id, p_status, SYSDATE);
 
     DBMS_OUTPUT.PUT_LINE('Attendance marked for Emp ID: ' || p_emp_id);
 END;
 /
 
+-- Insert Leave
 CREATE OR REPLACE PROCEDURE proc_insert_leave (
-    p_emp_id NUMBER,
-    p_leave_type VARCHAR2,
-    p_start_date DATE,
-    p_end_date DATE,
-    p_status VARCHAR2
+    p_emp_id IN NUMBER,
+    p_leave_type IN VARCHAR2,
+    p_start_date IN DATE,
+    p_end_date IN DATE,
+    p_status IN VARCHAR2
 ) IS
 BEGIN
-    INSERT INTO LeaveRequest
+    INSERT INTO LeaveRequest (leave_id, emp_id, leave_type, start_date, end_date, status)
     VALUES (seq_leave.NEXTVAL, p_emp_id, p_leave_type, p_start_date, p_end_date, p_status);
 
     DBMS_OUTPUT.PUT_LINE('Leave request added for Emp ID: ' || p_emp_id);
 END;
 /
 
-
-
-
-
-2)select data from employee
-
+-- Display Employees
 CREATE OR REPLACE PROCEDURE proc_display_employees IS
 BEGIN
     FOR emp_rec IN (
         SELECT emp_id, emp_name, dept_id, dob, doj, gender, contact, email
         FROM Employee
+        ORDER BY emp_id
     ) LOOP
         DBMS_OUTPUT.PUT_LINE(
             'ID: ' || emp_rec.emp_id || 
             ', Name: ' || emp_rec.emp_name || 
             ', Dept ID: ' || emp_rec.dept_id || 
-            ', DOB: ' || emp_rec.dob || 
-            ', DOJ: ' || emp_rec.doj || 
+            ', DOB: ' || NVL(TO_CHAR(emp_rec.dob, 'YYYY-MM-DD'), 'NULL') || 
+            ', DOJ: ' || NVL(TO_CHAR(emp_rec.doj, 'YYYY-MM-DD'), 'NULL') || 
             ', Gender: ' || emp_rec.gender || 
             ', Contact: ' || emp_rec.contact || 
             ', Email: ' || emp_rec.email
@@ -217,50 +307,47 @@ BEGIN
 END;
 /
 
+-- Display Departments
 CREATE OR REPLACE PROCEDURE proc_display_departments IS
 BEGIN
-    FOR d IN (SELECT * FROM Department) LOOP
+    FOR d IN (SELECT * FROM Department ORDER BY dept_id) LOOP
         DBMS_OUTPUT.PUT_LINE('Dept ID: ' || d.dept_id || ', Name: ' || d.dept_name);
     END LOOP;
 END;
 /
 
-
+-- Display Attendance
 CREATE OR REPLACE PROCEDURE proc_display_attendance IS
 BEGIN
     FOR a IN (
         SELECT a.attendance_id, e.emp_name, a.status, a.attendance_date
         FROM Attendance a JOIN Employee e ON a.emp_id = e.emp_id
+        ORDER BY a.attendance_date DESC
     ) LOOP
         DBMS_OUTPUT.PUT_LINE('ID: ' || a.attendance_id || ', Name: ' || a.emp_name || ', Status: ' || a.status || ', Date: ' || TO_CHAR(a.attendance_date, 'YYYY-MM-DD'));
     END LOOP;
 END;
 /
 
+-- Display Leaves
 CREATE OR REPLACE PROCEDURE proc_display_leaves IS
 BEGIN
     FOR l IN (
         SELECT l.leave_id, e.emp_name, l.leave_type, l.start_date, l.end_date, l.status
         FROM LeaveRequest l JOIN Employee e ON l.emp_id = e.emp_id
+        ORDER BY l.start_date DESC
     ) LOOP
-        DBMS_OUTPUT.PUT_LINE('Leave ID: ' || l.leave_id || ', Name: ' || l.emp_name || ', Type: ' || l.leave_type || ', From: ' || TO_CHAR(l.start_date, 'YYYY-MM-DD') || ', To: ' || TO_CHAR(l.end_date, 'YYYY-MM-DD') || ', Status: ' || l.status);
+        DBMS_OUTPUT.PUT_LINE('Leave ID: ' || l.leave_id || ', Name: ' || l.emp_name || ', Type: ' || l.leave_type || ', From: ' || NVL(TO_CHAR(l.start_date, 'YYYY-MM-DD'),'NULL') || ', To: ' || NVL(TO_CHAR(l.end_date, 'YYYY-MM-DD'),'NULL') || ', Status: ' || l.status);
     END LOOP;
 END;
 /
 
-
-
-
-
-
-
-3)update employee data 
-
+-- Update Employee
 CREATE OR REPLACE PROCEDURE proc_update_employee (
-    p_emp_id NUMBER,
-    p_name VARCHAR2,
-    p_contact VARCHAR2,
-    p_email VARCHAR2
+    p_emp_id IN NUMBER,
+    p_name IN VARCHAR2,
+    p_contact IN VARCHAR2,
+    p_email IN VARCHAR2
 ) IS
     v_count NUMBER;
 BEGIN
@@ -280,10 +367,10 @@ BEGIN
 END;
 /
 
-
+-- Update Attendance
 CREATE OR REPLACE PROCEDURE proc_update_attendance (
-    p_attendance_id NUMBER,
-    p_status VARCHAR2
+    p_attendance_id IN NUMBER,
+    p_status IN VARCHAR2
 ) IS
 BEGIN
     UPDATE Attendance
@@ -294,11 +381,10 @@ BEGIN
 END;
 /
 
-
-
+-- Update Department
 CREATE OR REPLACE PROCEDURE proc_update_department (
-    p_dept_id NUMBER,
-    p_dept_name VARCHAR2
+    p_dept_id IN NUMBER,
+    p_dept_name IN VARCHAR2
 ) IS
 BEGIN
     UPDATE Department
@@ -309,10 +395,10 @@ BEGIN
 END;
 /
 
-
+-- Update Leave Status
 CREATE OR REPLACE PROCEDURE proc_update_leave_status (
-    p_leave_id NUMBER,
-    p_status VARCHAR2
+    p_leave_id IN NUMBER,
+    p_status IN VARCHAR2
 ) IS
 BEGIN
     UPDATE LeaveRequest
@@ -323,13 +409,9 @@ BEGIN
 END;
 /
 
-
-
-
-
-4) Delete data from employee
+-- Delete Employee
 CREATE OR REPLACE PROCEDURE proc_delete_employee (
-    p_emp_id NUMBER
+    p_emp_id IN NUMBER
 ) IS
     v_count NUMBER;
 BEGIN
@@ -344,9 +426,9 @@ BEGIN
 END;
 /
 
-
+-- Delete Department
 CREATE OR REPLACE PROCEDURE proc_delete_department (
-    p_dept_id NUMBER
+    p_dept_id IN NUMBER
 ) IS
 BEGIN
     DELETE FROM Department
@@ -356,9 +438,9 @@ BEGIN
 END;
 /
 
-
+-- Delete Attendance
 CREATE OR REPLACE PROCEDURE proc_delete_attendance (
-    p_attendance_id NUMBER
+    p_attendance_id IN NUMBER
 ) IS
 BEGIN
     DELETE FROM Attendance
@@ -368,8 +450,9 @@ BEGIN
 END;
 /
 
+-- Delete Leave
 CREATE OR REPLACE PROCEDURE proc_delete_leave (
-    p_leave_id NUMBER
+    p_leave_id IN NUMBER
 ) IS
 BEGIN
     DELETE FROM LeaveRequest
@@ -379,11 +462,43 @@ BEGIN
 END;
 /
 
+-- Delete Employee with children (Attendance + LeaveRequest)
+CREATE OR REPLACE PROCEDURE delete_employee_with_children(p_emp_id IN NUMBER) AS
+BEGIN
+    DELETE FROM Attendance WHERE emp_id = p_emp_id;
+    DELETE FROM LeaveRequest WHERE emp_id = p_emp_id;
+    DELETE FROM Employee WHERE emp_id = p_emp_id;
 
+    DBMS_OUTPUT.PUT_LINE('Deleted employee and related data for emp_id = ' || p_emp_id);
+EXCEPTION
+    WHEN OTHERS THEN
+        DBMS_OUTPUT.PUT_LINE('Error in deleting employee: ' || SQLERRM);
+        RAISE;
+END;
+/
 
+-- Delete Department with children
+CREATE OR REPLACE PROCEDURE delete_department_with_children(p_dept_id IN NUMBER) AS
+BEGIN
+    DELETE FROM Attendance
+    WHERE emp_id IN (SELECT emp_id FROM Employee WHERE dept_id = p_dept_id);
 
-5)Reports
+    DELETE FROM LeaveRequest
+    WHERE emp_id IN (SELECT emp_id FROM Employee WHERE dept_id = p_dept_id);
 
+    DELETE FROM Employee WHERE dept_id = p_dept_id;
+
+    DELETE FROM Department WHERE dept_id = p_dept_id;
+
+    DBMS_OUTPUT.PUT_LINE('Deleted department and all employee-related data for dept_id = ' || p_dept_id);
+EXCEPTION
+    WHEN OTHERS THEN
+        DBMS_OUTPUT.PUT_LINE('Error in deleting department: ' || SQLERRM);
+        RAISE;
+END;
+/
+
+-- Reports
 CREATE OR REPLACE PROCEDURE report_dept_employee IS
 BEGIN
     DBMS_OUTPUT.PUT_LINE('----- Department-wise Employee Report -----');
@@ -402,9 +517,6 @@ BEGIN
 END;
 /
 
-
-
-
 CREATE OR REPLACE PROCEDURE report_today_attendance IS
 BEGIN
     DBMS_OUTPUT.PUT_LINE('Today''s Attendance Report');
@@ -420,8 +532,6 @@ BEGIN
     END LOOP;
 END;
 /
-
-
 
 CREATE OR REPLACE PROCEDURE report_leave_summary IS
 BEGIN
@@ -446,8 +556,6 @@ BEGIN
 END;
 /
 
-
-
 CREATE OR REPLACE PROCEDURE report_employee_summary IS
 BEGIN
     DBMS_OUTPUT.PUT_LINE('----- Full Employee Summary Report -----');
@@ -469,117 +577,57 @@ BEGIN
 END;
 /
 
-
-
-CREATE OR REPLACE PROCEDURE delete_employee_with_children(p_emp_id IN NUMBER) AS
+CREATE OR REPLACE PROCEDURE show_employee_report IS
 BEGIN
-    -- Step 1: Delete Attendance
-    DELETE FROM Attendance
-    WHERE emp_id = p_emp_id;
-
-    -- Step 2: Delete LeaveRequest
-    DELETE FROM LeaveRequest
-    WHERE emp_id = p_emp_id;
-
-    -- Step 3: Delete Employee
-    DELETE FROM Employee
-    WHERE emp_id = p_emp_id;
-
-    DBMS_OUTPUT.PUT_LINE('Deleted employee and related data for emp_id = ' || p_emp_id);
-EXCEPTION
-    WHEN OTHERS THEN
-        DBMS_OUTPUT.PUT_LINE('Error in deleting employee: ' || SQLERRM);
+    FOR emp_rec IN (
+        SELECT 
+            e.emp_id, e.emp_name, d.dept_name,
+            get_total_leaves(e.emp_id) AS total_leaves,
+            get_employee_age(e.emp_id) AS age
+        FROM Employee e
+        JOIN Department d ON e.dept_id = d.dept_id
+    ) LOOP
+        DBMS_OUTPUT.PUT_LINE(
+            'ID: ' || emp_rec.emp_id || 
+            ', Name: ' || emp_rec.emp_name || 
+            ', Dept: ' || emp_rec.dept_name || 
+            ', Age: ' || emp_rec.age || 
+            ', Leaves: ' || emp_rec.total_leaves
+        );
+    END LOOP;
 END;
 /
 
-
-
-CREATE OR REPLACE PROCEDURE delete_department_with_children(p_dept_id IN NUMBER) AS
-BEGIN
-    -- Step 1: Delete Attendance of employees in department
-    DELETE FROM Attendance
-    WHERE emp_id IN (SELECT emp_id FROM Employee WHERE dept_id = p_dept_id);
-
-    -- Step 2: Delete LeaveRequest of employees in department
-    DELETE FROM LeaveRequest
-    WHERE emp_id IN (SELECT emp_id FROM Employee WHERE dept_id = p_dept_id);
-
-    -- Step 3: Delete Employees
-    DELETE FROM Employee
-    WHERE dept_id = p_dept_id;
-
-    -- Step 4: Delete Department
-    DELETE FROM Department
-    WHERE dept_id = p_dept_id;
-
-    DBMS_OUTPUT.PUT_LINE('Deleted department and all employee-related data for dept_id = ' || p_dept_id);
-EXCEPTION
-    WHEN OTHERS THEN
-        DBMS_OUTPUT.PUT_LINE('Error in deleting department: ' || SQLERRM);
-END;
-/
-
-
- create PROCEDURE show_employee_report IS
-    BEGIN
-        FOR emp_rec IN (
-            SELECT 
-                e.emp_id, e.emp_name, d.dept_name,
-                get_total_leaves(e.emp_id) AS total_leaves,
-                get_employee_age(e.emp_id) AS age
-            FROM Employee e
-            JOIN Department d ON e.dept_id = d.dept_id
-        ) LOOP
-            DBMS_OUTPUT.PUT_LINE(
-                'ID: ' || emp_rec.emp_id || 
-                ', Name: ' || emp_rec.emp_name || 
-                ', Dept: ' || emp_rec.dept_name || 
-                ', Age: ' || emp_rec.age || 
-                ', Leaves: ' || emp_rec.total_leaves
-            );
-        END LOOP;
-    END;
-/
-
-
-
-
-
-
-
-
-
-
-
-
-
---- Triggers --------
-
-1) trigger for check DOB > DOJ
+-- ===================================================================
+-- TRIGGERS
+-- ===================================================================
+-- Ensure employee is at least 18 years old at DOJ
 CREATE OR REPLACE TRIGGER trg_check_doj
 BEFORE INSERT OR UPDATE ON Employee
 FOR EACH ROW
 BEGIN
-    IF MONTHS_BETWEEN(:NEW.doj, :NEW.dob) < 216 THEN 
-        RAISE_APPLICATION_ERROR(-20001, 'Employee must be at least 18 years old at date of joining.');
+    IF :NEW.dob IS NOT NULL AND :NEW.doj IS NOT NULL THEN
+        IF MONTHS_BETWEEN(:NEW.doj, :NEW.dob) < 216 THEN 
+            RAISE_APPLICATION_ERROR(-20001, 'Employee must be at least 18 years old at date of joining.');
+        END IF;
     END IF;
 END;
 /
 
-
-2) Generate auto attendance to today if not insert 
+-- Auto-set attendance_date to SYSDATE if not provided
 CREATE OR REPLACE TRIGGER trg_auto_att_date
 BEFORE INSERT ON Attendance
 FOR EACH ROW
 BEGIN
-    :NEW.attendance_date := SYSDATE;
+    IF :NEW.attendance_date IS NULL THEN
+        :NEW.attendance_date := SYSDATE;
+    END IF;
 END;
 /
 
-
---- Package --------
-
-1) creation of package  with procedures and function
+-- ===================================================================
+-- PACKAGE SPEC & BODY
+-- ===================================================================
 CREATE OR REPLACE PACKAGE emp_mgmt_pkg AS
     -- Insert Procedures
     PROCEDURE insert_emp (
@@ -673,9 +721,6 @@ CREATE OR REPLACE PACKAGE emp_mgmt_pkg AS
 END emp_mgmt_pkg;
 /
 
-
-2) implement package with package body
-
 CREATE OR REPLACE PACKAGE BODY emp_mgmt_pkg AS
 
     -- Insert Employee
@@ -689,7 +734,7 @@ CREATE OR REPLACE PACKAGE BODY emp_mgmt_pkg AS
             RAISE_APPLICATION_ERROR(-20001, 'DOJ must be at least 18 years after DOB');
         END IF;
 
-        INSERT INTO Employee 
+        INSERT INTO Employee (emp_id, emp_name, dob, doj, dept_id, gender, contact, email)
         VALUES (seq_emp.NEXTVAL, p_name, p_dob, p_doj, p_dept, p_gender, p_contact, p_email);
         DBMS_OUTPUT.PUT_LINE('Employee "' || p_name || '" inserted successfully.');
     END;
@@ -699,7 +744,7 @@ CREATE OR REPLACE PACKAGE BODY emp_mgmt_pkg AS
         p_emp_id NUMBER, p_status VARCHAR2
     ) IS
     BEGIN
-        INSERT INTO Attendance 
+        INSERT INTO Attendance (attendance_id, emp_id, status, attendance_date)
         VALUES (seq_att.NEXTVAL, p_emp_id, p_status, SYSDATE);
         DBMS_OUTPUT.PUT_LINE('Attendance marked for Emp ID: ' || p_emp_id);
     END;
@@ -724,8 +769,9 @@ CREATE OR REPLACE PACKAGE BODY emp_mgmt_pkg AS
         p_status VARCHAR2
     ) IS
     BEGIN
-        INSERT INTO LeaveRequest
+        INSERT INTO LeaveRequest (leave_id, emp_id, leave_type, start_date, end_date, status)
         VALUES (seq_leave.NEXTVAL, p_emp_id, p_leave_type, p_start_date, p_end_date, p_status);
+        DBMS_OUTPUT.PUT_LINE('Leave inserted for emp_id = ' || p_emp_id);
     END;
 
     -- Update Employee
@@ -857,8 +903,8 @@ CREATE OR REPLACE PACKAGE BODY emp_mgmt_pkg AS
                 'ID: ' || emp_rec.emp_id || 
                 ', Name: ' || emp_rec.emp_name || 
                 ', Dept ID: ' || emp_rec.dept_id || 
-                ', DOB: ' || emp_rec.dob || 
-                ', DOJ: ' || emp_rec.doj || 
+                ', DOB: ' || NVL(TO_CHAR(emp_rec.dob, 'YYYY-MM-DD'),'NULL') || 
+                ', DOJ: ' || NVL(TO_CHAR(emp_rec.doj, 'YYYY-MM-DD'),'NULL') || 
                 ', Gender: ' || emp_rec.gender || 
                 ', Contact: ' || emp_rec.contact || 
                 ', Email: ' || emp_rec.email
@@ -892,12 +938,12 @@ CREATE OR REPLACE PACKAGE BODY emp_mgmt_pkg AS
             SELECT l.leave_id, e.emp_name, l.leave_type, l.start_date, l.end_date, l.status
             FROM LeaveRequest l JOIN Employee e ON l.emp_id = e.emp_id
         ) LOOP
-            DBMS_OUTPUT.PUT_LINE('Leave ID: ' || l.leave_id || ', Name: ' || l.emp_name || ', Type: ' || l.leave_type || ', From: ' || TO_CHAR(l.start_date, 'YYYY-MM-DD') || ', To: ' || TO_CHAR(l.end_date, 'YYYY-MM-DD') || ', Status: ' || l.status);
+            DBMS_OUTPUT.PUT_LINE('Leave ID: ' || l.leave_id || ', Name: ' || l.emp_name || ', Type: ' || l.leave_type || ', From: ' || NVL(TO_CHAR(l.start_date, 'YYYY-MM-DD'),'NULL') || ', To: ' || NVL(TO_CHAR(l.end_date, 'YYYY-MM-DD'),'NULL') || ', Status: ' || l.status);
         END LOOP;
     END;
 
     -- Report: Show Basic Employee Info
-   PROCEDURE show_employee_report IS
+    PROCEDURE show_employee_report IS
     BEGIN
         FOR emp_rec IN (
             SELECT 
@@ -986,116 +1032,105 @@ CREATE OR REPLACE PACKAGE BODY emp_mgmt_pkg AS
         END LOOP;
     END;
 
-    -- Function to Get Age
+    -- Function to Get Age (package-level)
     FUNCTION fetch_age(p_emp_id NUMBER) RETURN NUMBER IS
-        dob DATE;
-        age NUMBER;
+        v_dob DATE;
+        v_age NUMBER;
     BEGIN
-        SELECT dob INTO dob FROM Employee WHERE emp_id = p_emp_id;
-        age := TRUNC(MONTHS_BETWEEN(SYSDATE, dob) / 12);
-        RETURN age;
+        SELECT dob INTO v_dob FROM Employee WHERE emp_id = p_emp_id;
+        v_age := TRUNC(MONTHS_BETWEEN(SYSDATE, v_dob) / 12);
+        RETURN v_age;
+    EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+            RETURN NULL;
+    END;
+
+    -- Function to Get Total Leaves (package-level)
+    FUNCTION total_leave(p_emp_id NUMBER) RETURN NUMBER IS
+        v_total NUMBER;
+    BEGIN
+        SELECT COUNT(*) INTO v_total FROM LeaveRequest WHERE emp_id = p_emp_id;
+        RETURN v_total;
     END;
 
 END emp_mgmt_pkg;
 /
 
-
-----------------------------------------
-  get attendance partition wise 
-------------------------------------
-SELECT * FROM Attendance PARTITION (att_2025_jan);
-
-
-
-
-
-
-
----- Data insert into tables ------
+-- ===================================================================
+-- SAMPLE DATA INSERTS (explicit columns)
+-- ===================================================================
+-- Departments
 INSERT INTO Department (dept_id, dept_name) VALUES (101, 'Human Resources');
 INSERT INTO Department (dept_id, dept_name) VALUES (102, 'Finance');
 INSERT INTO Department (dept_id, dept_name) VALUES (103, 'IT');
 
+-- Employees (specify emp_id explicitly to match sample)
+INSERT INTO Employee (emp_id, emp_name, dob, doj, dept_id, gender, contact, email)
+VALUES (1, 'Jaydip Desai', TO_DATE('2000-05-20','YYYY-MM-DD'), TO_DATE('2020-07-15','YYYY-MM-DD'), 101, 'Male', '9998887771', 'jaydip@gmail.com');
 
-INSERT INTO Employee (emp_id, emp_name, dept_id, dob, doj, gender, contact, email)
-VALUES (1, 'Jaydip Desai', 101, TO_DATE('2000-05-20','YYYY-MM-DD'), TO_DATE('2020-07-15','YYYY-MM-DD'), 'Male', '9998887771', 'jaydip@gmail.com');
+INSERT INTO Employee (emp_id, emp_name, dob, doj, dept_id, gender, contact, email)
+VALUES (2, 'Amit Patel', TO_DATE('1999-03-10','YYYY-MM-DD'), TO_DATE('2019-04-15','YYYY-MM-DD'), 102, 'Male', '9876543210', 'amit.patel@gmail.com');
 
-INSERT INTO Employee (emp_id, emp_name, dept_id, dob, doj, gender, contact, email)
-VALUES (2, 'Amit Patel', 102, TO_DATE('1999-03-10','YYYY-MM-DD'), TO_DATE('2019-04-15','YYYY-MM-DD'), 'Male', '9876543210', 'amit.patel@gmail.com');
+INSERT INTO Employee (emp_id, emp_name, dob, doj, dept_id, gender, contact, email)
+VALUES (3, 'Priya Shah', TO_DATE('1998-08-22','YYYY-MM-DD'), TO_DATE('2018-09-01','YYYY-MM-DD'), 103, 'Female', '8123456789', 'priya.shah@gmail.com');
 
-INSERT INTO Employee (emp_id, emp_name, dept_id, dob, doj, gender, contact, email)
-VALUES (3, 'Priya Shah', 103, TO_DATE('1998-08-22','YYYY-MM-DD'), TO_DATE('2018-09-01','YYYY-MM-DD'), 'Female', '8123456789', 'priya.shah@gmail.com');
+INSERT INTO Employee (emp_id, emp_name, dob, doj, dept_id, gender, contact, email)
+VALUES (4, 'Ravi Mehta', TO_DATE('1995-06-15','YYYY-MM-DD'), TO_DATE('2015-02-10','YYYY-MM-DD'), 101, 'Male', '9001234567', 'ravi.mehta@gmail.com');
 
-INSERT INTO Employee (emp_id, emp_name, dept_id, dob, doj, gender, contact, email)
-VALUES (4, 'Ravi Mehta', 101, TO_DATE('1995-06-15','YYYY-MM-DD'), TO_DATE('2015-02-10','YYYY-MM-DD'), 'Male', '9001234567', 'ravi.mehta@gmail.com');
+INSERT INTO Employee (emp_id, emp_name, dob, doj, dept_id, gender, contact, email)
+VALUES (5, 'Sneha Joshi', TO_DATE('2001-01-10','YYYY-MM-DD'), TO_DATE('2021-03-20','YYYY-MM-DD'), 103, 'Female', '8500011122', 'sneha.joshi@gmail.com');
 
-INSERT INTO Employee (emp_id, emp_name, dept_id, dob, doj, gender, contact, email)
-VALUES (5, 'Sneha Joshi', 103, TO_DATE('2001-01-10','YYYY-MM-DD'), TO_DATE('2021-03-20','YYYY-MM-DD'), 'Female', '8500011122', 'sneha.joshi@gmail.com');
+-- Attendance (use seq_att for ids)
+INSERT INTO Attendance (attendance_id, emp_id, status, attendance_date) VALUES (seq_att.NEXTVAL, 1, 'Present', SYSDATE);
+INSERT INTO Attendance (attendance_id, emp_id, status, attendance_date) VALUES (seq_att.NEXTVAL, 2, 'Absent', SYSDATE);
+INSERT INTO Attendance (attendance_id, emp_id, status, attendance_date) VALUES (seq_att.NEXTVAL, 3, 'Present', SYSDATE);
+INSERT INTO Attendance (attendance_id, emp_id, status, attendance_date) VALUES (seq_att.NEXTVAL, 4, 'Present', SYSDATE);
+INSERT INTO Attendance (attendance_id, emp_id, status, attendance_date) VALUES (seq_att.NEXTVAL, 5, 'Absent', SYSDATE);
 
+-- LeaveRequests
+INSERT INTO LeaveRequest (leave_id, emp_id, leave_type, start_date, end_date, status) VALUES (seq_leave.NEXTVAL, 3, 'Sick', TO_DATE('2025-08-01','YYYY-MM-DD'), TO_DATE('2025-08-03','YYYY-MM-DD'), 'Pending');
+INSERT INTO LeaveRequest (leave_id, emp_id, leave_type, start_date, end_date, status) VALUES (seq_leave.NEXTVAL, 4, 'Casual', TO_DATE('2025-08-05','YYYY-MM-DD'), TO_DATE('2025-08-06','YYYY-MM-DD'), 'Approved');
+INSERT INTO LeaveRequest (leave_id, emp_id, leave_type, start_date, end_date, status) VALUES (seq_leave.NEXTVAL, 2, 'Study', TO_DATE('2025-08-07','YYYY-MM-DD'), TO_DATE('2025-08-15','YYYY-MM-DD'), 'Rejected');
 
-INSERT INTO Attendance VALUES (seq_att.NEXTVAL, 1, 'Present', DEFAULT);
-INSERT INTO Attendance VALUES (seq_att.NEXTVAL, 2, 'Absent', DEFAULT);
-INSERT INTO Attendance VALUES (seq_att.NEXTVAL, 3, 'Present', DEFAULT);
-INSERT INTO Attendance VALUES (seq_att.NEXTVAL, 4, 'Present', DEFAULT);
-INSERT INTO Attendance VALUES (seq_att.NEXTVAL, 5, 'Absent', DEFAULT);
+COMMIT;
 
-INSERT INTO LeaveRequest VALUES (seq_leave.NEXTVAL, 3, 'Sick', TO_DATE('2025-08-01','YYYY-MM-DD'), TO_DATE('2025-08-03','YYYY-MM-DD'), 'Pending');
-INSERT INTO LeaveRequest VALUES (seq_leave.NEXTVAL, 4, 'Casual', TO_DATE('2025-08-05','YYYY-MM-DD'), TO_DATE('2025-08-06','YYYY-MM-DD'), 'Approved');
+-- ===================================================================
+-- EXAMPLE QUERIES / USAGE
+-- ===================================================================
+-- 1) Select partition contents (use the partition names that exist)
+SELECT * FROM Attendance PARTITION (att_jan_jun_2025);
+SELECT * FROM Attendance PARTITION (att_jul_dec_2025);
+SELECT * FROM Attendance PARTITION (att_future);
 
-INSERT INTO LeaveRequest VALUES (seq_leave.NEXTVAL, 2, 'study', TO_DATE('2025-08-07','YYYY-MM-DD'), TO_DATE('2025-08-15','YYYY-MM-DD'), 'Rejected');
+-- 2) Run reports
+-- SET SERVEROUTPUT ON; (in SQL*Plus) before calling to see DBMS_OUTPUT
+-- Example:
+-- EXEC report_today_attendance;
+-- EXEC report_employee_summary;
 
-// formate
-
--- ===============================
--- Global formatting
--- ===============================
-SET LINESIZE 200
-SET PAGESIZE 50
-
--- ===============================
--- Department Table Formatting
--- ===============================
-COLUMN dept_id FORMAT 999
-COLUMN dept_name FORMAT A20
-
-SELECT * FROM Department;
-
--- ===============================
--- Employee Table Formatting
--- ===============================
-COLUMN emp_id FORMAT 999
-COLUMN emp_name FORMAT A20
-COLUMN dob FORMAT A12
-COLUMN doj FORMAT A12
-COLUMN dept_id FORMAT 999
-COLUMN gender FORMAT A8
-COLUMN contact FORMAT A12
-COLUMN email FORMAT A25
-
-SELECT * FROM Employee;
-
--- ===============================
--- Attendance Table Formatting
--- ===============================
-COLUMN attendance_id FORMAT 999
-COLUMN emp_id FORMAT 999
-COLUMN status FORMAT A12
-COLUMN attendance_date FORMAT A12
-
-SELECT * FROM Attendance;
-
--- ===============================
--- LeaveRequest Table Formatting
--- ===============================
-COLUMN leave_id FORMAT 999
-COLUMN emp_id FORMAT 999
-COLUMN leave_type FORMAT A20
-COLUMN start_date FORMAT A12
-COLUMN end_date FORMAT A12
-COLUMN status FORMAT A10
-
-SELECT * FROM LeaveRequest;
-
-
-
+-- ===================================================================
+-- FORMATTING SUGGESTIONS (SQL*Plus)
+-- ===================================================================
+-- SET LINESIZE 200
+-- SET PAGESIZE 50
+-- COLUMN dept_id FORMAT 999
+-- COLUMN dept_name FORMAT A20
+-- COLUMN emp_id FORMAT 999
+-- COLUMN emp_name FORMAT A20
+-- COLUMN dob FORMAT A12
+-- COLUMN doj FORMAT A12
+-- COLUMN dept_id FORMAT 999
+-- COLUMN gender FORMAT A8
+-- COLUMN contact FORMAT A12
+-- COLUMN email FORMAT A25
+-- COLUMN attendance_id FORMAT 999
+-- COLUMN emp_id FORMAT 999
+-- COLUMN status FORMAT A12
+-- COLUMN attendance_date FORMAT A12
+-- COLUMN leave_id FORMAT 999
+-- COLUMN emp_id FORMAT 999
+-- COLUMN leave_type FORMAT A20
+-- COLUMN start_date FORMAT A12
+-- COLUMN end_date FORMAT A12
+-- COLUMN status FORMAT A10
 
