@@ -9,15 +9,18 @@ END;
 /
 
 BEGIN
-    EXECUTE IMMEDIATE 'DROP TRIGGER trg_check_doj';
-EXCEPTION WHEN OTHERS THEN NULL;
-END;
+   EXECUTE IMMEDIATE 'DROP TRIGGER trg_emp_dob_doj';
+EXCEPTION WHEN OTHERS THEN NULL; END;
 /
 
 BEGIN
-    EXECUTE IMMEDIATE 'DROP TRIGGER trg_auto_att_date';
-EXCEPTION WHEN OTHERS THEN NULL;
-END;
+   EXECUTE IMMEDIATE 'DROP TRIGGER trg_attendance_date';
+EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+
+BEGIN
+   EXECUTE IMMEDIATE 'DROP TRIGGER trg_emp_age_check';
+EXCEPTION WHEN OTHERS THEN NULL; END;
 /
 
 BEGIN
@@ -168,6 +171,8 @@ CREATE SEQUENCE seq_leave START WITH 500 INCREMENT BY 1 NOCACHE NOCYCLE;
 -- ===================================================================
 CREATE INDEX idx_emp_name ON Employee(emp_name);
 CREATE INDEX idx_att_date ON Attendance(attendance_date);
+CREATE INDEX emp_dept_cluster_idx ON CLUSTER emp_dept_cluster;
+
 -- (emp_dept_cluster_idx created earlier)
 
 -- ===================================================================
@@ -217,6 +222,44 @@ BEGIN
     RETURN v_total;
 END;
 /
+
+--------------------------------------------------------------------------------
+-- TRIGGERS
+--------------------------------------------------------------------------------
+
+-- DOJ must be greater than DOB
+CREATE OR REPLACE TRIGGER trg_emp_dob_doj
+BEFORE INSERT OR UPDATE ON Employee
+FOR EACH ROW
+BEGIN
+   IF :NEW.doj < :NEW.dob THEN
+      RAISE_APPLICATION_ERROR(-20001, 'DOJ cannot be earlier than DOB');
+   END IF;
+END;
+/
+
+-- Employee age must be >= 18 years
+CREATE OR REPLACE TRIGGER trg_emp_age_check
+BEFORE INSERT OR UPDATE ON Employee
+FOR EACH ROW
+BEGIN
+   IF MONTHS_BETWEEN(:NEW.doj, :NEW.dob) < 216 THEN
+      RAISE_APPLICATION_ERROR(-20002, 'Employee must be at least 18 years old at joining');
+   END IF;
+END;
+/
+
+-- Attendance date must not be in future
+CREATE OR REPLACE TRIGGER trg_attendance_date
+BEFORE INSERT ON Attendance
+FOR EACH ROW
+BEGIN
+   IF :NEW.att_date > SYSDATE THEN
+      RAISE_APPLICATION_ERROR(-20003, 'Attendance date cannot be in the future');
+   END IF;
+END;
+/
+
 
 -- ===================================================================
 -- STANDALONE PROCEDURES
@@ -1108,6 +1151,24 @@ SELECT * FROM Attendance PARTITION (att_future);
 -- EXEC report_today_attendance;
 -- EXEC report_employee_summary;
 
+-- Show Employees
+EXEC proc_show_emp;
+
+-- Show Attendance
+EXEC proc_show_attendance;
+
+-- Call Function: Get Age
+SELECT fn_get_emp_age(1) AS Age FROM dual;
+
+-- Call Function: Get Attendance Count
+SELECT fn_get_attendance_count(1) AS PresentDays FROM dual;
+
+-- package execute
+EXEC emp_mgmt_pkg.insert_employee('Ravi Patel', DATE '1992-02-15', DATE '2012-03-01', 10);
+EXEC emp_mgmt_pkg.insert_attendance(1, SYSDATE-2, 'Present');
+SELECT emp_mgmt_pkg.get_emp_age(2) FROM dual;
+SELECT emp_mgmt_pkg.get_attendance_count(1) FROM dual;
+
 -- ===================================================================
 -- FORMATTING SUGGESTIONS (SQL*Plus)
 -- ===================================================================
@@ -1133,4 +1194,5 @@ SELECT * FROM Attendance PARTITION (att_future);
 -- COLUMN start_date FORMAT A12
 -- COLUMN end_date FORMAT A12
 -- COLUMN status FORMAT A10
+
 
